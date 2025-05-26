@@ -1,0 +1,84 @@
+# Step 1: Install required packages
+!pip install langchain langchain-community langchain-groq wikipedia pydantic groq --quiet
+
+# Step 2: Import packages
+import os
+import wikipedia
+from pydantic import BaseModel, Field
+from typing import Optional
+from kaggle_secrets import UserSecretsClient
+from langchain_groq import ChatGroq
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+
+# Step 3: Get API Key from Kaggle Secrets
+user_secrets = UserSecretsClient()
+groq_api_key = user_secrets.get_secret("GROQ_API_KEY")
+os.environ["GROQ_API_KEY"] = groq_api_key
+
+# Step 4: Define output schema
+class InstitutionInfo(BaseModel):
+    name: str = Field(..., description="Name of the institution")
+    founder: Optional[str]
+    founded_year: Optional[str]
+    branches: Optional[str]
+    employees: Optional[str]
+    summary: Optional[str]
+
+# Step 5: Create Groq LLM
+llm = ChatGroq(
+    model_name="deepseek-r1-distill-llama-70b",
+    api_key=groq_api_key
+)
+
+# Step 6: Prompt Template
+prompt = PromptTemplate(
+    input_variables=["institution_name", "wiki_content"],
+    template="""
+You are an expert data extractor. Analyze the following Wikipedia article on "{institution_name}" and extract the following information:
+1. Founder
+2. Year it was founded
+3. Current branches or campuses
+4. Number of employees
+5. A short 4-line summary
+
+Text:
+{wiki_content}
+
+Respond in the following JSON format:
+{{ 
+  "name": "Institution name", 
+  "founder": "...", 
+  "founded_year": "...", 
+  "branches": "...", 
+  "employees": "...", 
+  "summary": "..." 
+}}
+"""
+)
+
+# Step 7: Run the Chain
+def get_institution_info(name: str) -> InstitutionInfo:
+    try:
+        wiki_content = wikipedia.page(name).content
+    except wikipedia.exceptions.DisambiguationError as e:
+        wiki_content = wikipedia.page(e.options[0]).content
+    except Exception as e:
+        raise RuntimeError(f"Error fetching Wikipedia content: {e}")
+
+    chain = LLMChain(llm=llm, prompt=prompt)
+    response = chain.run(institution_name=name, wiki_content=wiki_content)
+
+    try:
+        import json
+        parsed = InstitutionInfo(**json.loads(response))
+        return parsed
+    except Exception as e:
+        print("Model response parsing failed. Raw response:")
+        print(response)
+        raise e
+
+# Step 8: Test it
+institution_name = "Massachusetts Institute of Technology"
+info = get_institution_info(institution_name)
+print(info)
